@@ -5,6 +5,7 @@ set -euo pipefail
 BIN_DEST="${HOME}/.local/bin/teams-launcher"
 DESKTOP_DEST="${HOME}/.local/share/applications/teams-launcher.desktop"
 ICON_DEST="${HOME}/.local/share/icons/hicolor/scalable/apps/teams.svg"
+EXTENSION_DEST="${HOME}/.local/share/teams-launcher/extension"
 APP_DIR="${HOME}/.local/share/applications"
 
 echo "Uninstalling teams-launcher ..."
@@ -26,6 +27,12 @@ fi
 if [[ -f "${ICON_DEST}" ]]; then
   rm -f "${ICON_DEST}"
   echo "Removed ${ICON_DEST}"
+  removed=1
+fi
+
+if [[ -d "${EXTENSION_DEST}" ]]; then
+  rm -rf "${EXTENSION_DEST}"
+  echo "Removed ${EXTENSION_DEST}"
   removed=1
 fi
 

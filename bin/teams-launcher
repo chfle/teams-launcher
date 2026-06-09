@@ -3,6 +3,7 @@ set -euo pipefail
 
 TEAMS_URL="https://teams.microsoft.com/v2/"
 PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/teams-launcher.pid"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Usage ────────────────────────────────────────────────────────────────────
 usage() {
@@ -97,8 +98,33 @@ raise_window() {
   return 0
 }
 
+# ── Window property injection ─────────────────────────────────────────────────
+# Polls until the Teams window appears (up to 15 s), then sets
+# _KDE_NET_WM_DESKTOP_FILE so KDE associates the correct .desktop icon.
+_apply_window_props() {
+  local deadline wid
+  deadline=$(( $(date +%s) + 15 ))
+  while [[ $(date +%s) -lt ${deadline} ]]; do
+    if command -v xdotool &>/dev/null; then
+      wid="$(xdotool search --class TeamsLauncher 2>/dev/null | head -1 || true)"
+      if [[ -n "${wid}" ]]; then
+        if command -v xprop &>/dev/null; then
+          xprop -id "${wid}" \
+            -f _KDE_NET_WM_DESKTOP_FILE 8s \
+            -set _KDE_NET_WM_DESKTOP_FILE "teams-launcher" 2>/dev/null || true
+        fi
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+}
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 cleanup() {
+  if [[ -n "${PROPS_PID}" ]]; then
+    kill "${PROPS_PID}" 2>/dev/null || true
+  fi
   rm -f "${PID_FILE}"
   if [[ "${CLEANUP_PROFILE}" == "true" && -n "${PROFILE:-}" && -d "${PROFILE}" ]]; then
     rm -rf "${PROFILE}"
@@ -109,6 +135,9 @@ cleanup() {
 handle_signal() {
   if [[ -n "${CHROMIUM_PID}" ]]; then
     kill "${CHROMIUM_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${PROPS_PID}" ]]; then
+    kill "${PROPS_PID}" 2>/dev/null || true
   fi
   exit 143
 }
@@ -154,6 +183,7 @@ CHROMIUM_BIN="$(find_chromium)"
 CLEANUP_PROFILE=false
 PROFILE=""
 CHROMIUM_PID=""
+PROPS_PID=""
 
 if [[ "${MODE}" == "ephemeral" ]]; then
   CLEANUP_PROFILE=true
@@ -167,11 +197,33 @@ fi
 trap cleanup EXIT
 trap handle_signal TERM INT
 
+# ── Extension detection ───────────────────────────────────────────────────────
+EXTENSION_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/teams-launcher/extension"
+if [[ ! -d "${EXTENSION_DIR}" ]]; then
+  EXTENSION_DIR="${SCRIPT_DIR}/../share/extension"
+fi
+
+# ── Build Chromium args ───────────────────────────────────────────────────────
+CHROMIUM_ARGS=(
+  "--user-data-dir=${PROFILE}"
+  "--app=${TEAMS_URL}"
+  "--class=TeamsLauncher"
+  "--no-first-run"
+  "--no-default-browser-check"
+  "--password-store=basic"
+)
+if [[ -d "${EXTENSION_DIR}" ]]; then
+  CHROMIUM_ARGS+=("--load-extension=${EXTENSION_DIR}")
+fi
+
 # ── Dry-run ───────────────────────────────────────────────────────────────────
 if [[ "${DRY_RUN}" == "true" ]]; then
   printf 'PROFILE=%s\n' "${PROFILE}"
-  printf 'COMMAND=%s --user-data-dir=%s --app=%s --class=TeamsLauncher --no-first-run --no-default-browser-check --password-store=basic\n' \
-    "${CHROMIUM_BIN}" "${PROFILE}" "${TEAMS_URL}"
+  printf 'COMMAND=%s' "${CHROMIUM_BIN}"
+  for arg in "${CHROMIUM_ARGS[@]}"; do
+    printf ' %s' "${arg}"
+  done
+  printf '\n'
   exit 0
 fi
 
@@ -179,14 +231,11 @@ fi
 printf '%d\n' "$$" > "${PID_FILE}"
 
 # ── Launch ────────────────────────────────────────────────────────────────────
-"${CHROMIUM_BIN}" \
-  --user-data-dir="${PROFILE}" \
-  --app="${TEAMS_URL}" \
-  --class=TeamsLauncher \
-  --no-first-run \
-  --no-default-browser-check \
-  --password-store=basic &
-
+"${CHROMIUM_BIN}" "${CHROMIUM_ARGS[@]}" &
 CHROMIUM_PID="$!"
+
+_apply_window_props &
+PROPS_PID="$!"
+
 wait "${CHROMIUM_PID}"
 CHROMIUM_PID=""

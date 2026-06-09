@@ -6,16 +6,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${HOME}/.local/bin"
 APP_DIR="${HOME}/.local/share/applications"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
+DATA_DIR="${HOME}/.local/share/teams-launcher"
 BIN_SRC="${SCRIPT_DIR}/bin/teams-launcher"
 BIN_DEST="${BIN_DIR}/teams-launcher"
 DESKTOP_TEMPLATE="${SCRIPT_DIR}/share/teams-launcher.desktop.in"
 DESKTOP_DEST="${APP_DIR}/teams-launcher.desktop"
 ICON_SRC="${SCRIPT_DIR}/share/icons/teams.svg"
 ICON_DEST="${ICON_DIR}/teams.svg"
+EXTENSION_SRC="${SCRIPT_DIR}/share/extension"
+EXTENSION_DEST="${DATA_DIR}/extension"
 
 echo "Installing teams-launcher to ${BIN_DEST} ..."
 
-mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"
+mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" "${DATA_DIR}"
 
 install -m 0755 "${BIN_SRC}" "${BIN_DEST}"
 
@@ -30,6 +33,12 @@ fi
 
 if command -v update-desktop-database &>/dev/null; then
   update-desktop-database "${APP_DIR}"
+fi
+
+# Install title-rewrite extension for the running window's titlebar.
+if [[ -d "${EXTENSION_SRC}" ]]; then
+  rm -rf "${EXTENSION_DEST}"
+  cp -r "${EXTENSION_SRC}" "${EXTENSION_DEST}"
 fi
 
 echo "Installed successfully."

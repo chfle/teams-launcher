@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "teams-launcher-title",
+  "version": "1",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*"
+      ],
+      "js": ["title.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
