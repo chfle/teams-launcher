@@ -232,9 +232,12 @@ rm -rf "${t3_data_home}"
 
 # ── Test 4: missing chromium ──────────────────────────────────────────────────
 run_test "4: missing chromium"
+# Invoke via explicit 'bash' to bypass the #!/usr/bin/env bash shebang, which
+# itself searches PATH. The launcher detects chromium first (before mktemp), so
+# an empty PATH causes find_chromium to fail before any disk operations.
 empty_dir="$(mktemp -d)"
 t4_exit=0
-t4_out="$(PATH="${empty_dir}" CHROMIUM="" "${LAUNCHER}" --dry-run 2>&1)" || t4_exit=$?
+t4_out="$(PATH="${empty_dir}" CHROMIUM="" /bin/bash "${LAUNCHER}" --dry-run 2>&1)" || t4_exit=$?
 rm -rf "${empty_dir}"
 
 if [[ "${t4_exit}" -ne 0 ]]; then

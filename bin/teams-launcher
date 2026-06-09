@@ -50,18 +50,10 @@ find_chromium() {
     fi
   done
 
-  cat >&2 <<'EOF'
-Error: no Chromium binary found.
-
-Tried (in order):
-  $CHROMIUM env var, chromium, chromium-browser
-
-Install Chromium with:
-  sudo apt install chromium
-
-Or point to an existing binary:
-  CHROMIUM=/path/to/chromium teams-launcher
-EOF
+  printf 'Error: no Chromium binary found.\n' >&2
+  printf '\nTried in order: CHROMIUM env var, chromium, chromium-browser\n' >&2
+  printf '\nInstall Chromium with:\n  sudo apt install chromium\n' >&2
+  printf '\nOr set CHROMIUM=/path/to/chromium before running.\n' >&2
   return 1
 }
 
@@ -130,35 +122,28 @@ if [[ "${MODE}" != "ephemeral" && "${MODE}" != "persistent" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 1: Set CLEANUP_PROFILE
+# Step 1: Resolve chromium binary (fail fast before touching disk)
+# ---------------------------------------------------------------------------
+CHROMIUM_BIN="$(find_chromium)"
+
+# ---------------------------------------------------------------------------
+# Step 2: Set CLEANUP_PROFILE and create PROFILE
 # ---------------------------------------------------------------------------
 if [[ "${MODE}" == "ephemeral" ]]; then
   CLEANUP_PROFILE=true
-else
-  CLEANUP_PROFILE=false
-fi
-
-# ---------------------------------------------------------------------------
-# Step 2: Create PROFILE
-# ---------------------------------------------------------------------------
-if [[ "${MODE}" == "ephemeral" ]]; then
   PROFILE="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/teams-launcher-XXXXXXXXXX")"
 else
+  CLEANUP_PROFILE=false
   PROFILE="${XDG_DATA_HOME:-${HOME}/.local/share}/teams-launcher/profile"
   mkdir -p "${PROFILE}"
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: Set traps (after PROFILE exists, before anything else)
+# Step 3: Set traps (immediately after PROFILE is created)
 # ---------------------------------------------------------------------------
 CHROMIUM_PID=""
 trap cleanup EXIT
 trap handle_signal TERM INT
-
-# ---------------------------------------------------------------------------
-# Step 4: Resolve chromium binary
-# ---------------------------------------------------------------------------
-CHROMIUM_BIN="$(find_chromium)"
 
 # ---------------------------------------------------------------------------
 # Step 5: Build command array

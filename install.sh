@@ -30,6 +30,7 @@ case ":${PATH}:" in
   *)
     printf 'WARNING: %s is not on your PATH.\n' "${BIN_DIR}" >&2
     printf '         Add to ~/.bashrc or ~/.profile:\n' >&2
+    # shellcheck disable=SC2016
     printf '         export PATH="${HOME}/.local/bin:${PATH}"\n' >&2
     ;;
 esac
