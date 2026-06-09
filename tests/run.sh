@@ -253,6 +253,71 @@ t5_exit=0
 "${LAUNCHER}" --totally-unknown-flag 2>/dev/null || t5_exit=$?
 assert_exit "5 unknown flag" "2" "${t5_exit}"
 
+# ── Test 6: PID file written and cleaned up ───────────────────────────────────
+run_test "6: PID file lifecycle"
+t6_pid_file="${XDG_RUNTIME_DIR:-/tmp}/teams-launcher.pid"
+rm -f "${t6_pid_file}"
+
+FAKE_CHROMIUM_SLEEP=5 "${LAUNCHER}" --mode=ephemeral &
+t6_pid=$!
+sleep 1
+
+# PID file must exist and contain the launcher's PID
+if [[ -f "${t6_pid_file}" ]]; then
+  pass "6 PID file created during run"
+  t6_stored_pid=""
+  read -r t6_stored_pid < "${t6_pid_file}" 2>/dev/null || true
+  if [[ "${t6_stored_pid}" == "${t6_pid}" ]]; then
+    pass "6 PID file contains launcher PID"
+  else
+    fail "6 PID file content mismatch (stored=${t6_stored_pid} expected=${t6_pid})"
+  fi
+else
+  fail "6 PID file not found during run"
+fi
+
+kill -TERM "${t6_pid}" 2>/dev/null || true
+wait "${t6_pid}" 2>/dev/null || true
+sleep 0.5
+
+if [[ ! -f "${t6_pid_file}" ]]; then
+  pass "6 PID file removed after exit"
+else
+  fail "6 PID file still exists after exit"
+  rm -f "${t6_pid_file}"
+fi
+
+# ── Test 7: stale PID file is cleared and launch proceeds ────────────────────
+run_test "7: stale PID file cleared"
+t7_pid_file="${XDG_RUNTIME_DIR:-/tmp}/teams-launcher.pid"
+printf '99999999\n' > "${t7_pid_file}"  # definitely-dead PID
+
+FAKE_CHROMIUM_SLEEP=1 "${LAUNCHER}" --mode=ephemeral &
+t7_pid=$!
+wait "${t7_pid}" 2>/dev/null || true
+
+if [[ ! -f "${t7_pid_file}" ]]; then
+  pass "7 stale PID file removed after normal exit"
+else
+  fail "7 stale PID file still present after exit"
+  rm -f "${t7_pid_file}"
+fi
+
+# ── Test 8: single-instance exits 0 when already running ─────────────────────
+run_test "8: single-instance detect"
+t8_pid_file="${XDG_RUNTIME_DIR:-/tmp}/teams-launcher.pid"
+rm -f "${t8_pid_file}"
+
+# Simulate a running instance by writing the current shell's PID.
+printf '%d\n' "$$" > "${t8_pid_file}"
+
+t8_exit=0
+"${LAUNCHER}" --mode=ephemeral >/dev/null 2>&1 || t8_exit=$?
+# raise_window may fail silently (no display) but the launcher must still exit 0.
+assert_exit "8 single-instance exits 0" "0" "${t8_exit}"
+
+rm -f "${t8_pid_file}"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════"

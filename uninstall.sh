@@ -4,6 +4,7 @@ set -euo pipefail
 
 BIN_DEST="${HOME}/.local/bin/teams-launcher"
 DESKTOP_DEST="${HOME}/.local/share/applications/teams-launcher.desktop"
+ICON_DEST="${HOME}/.local/share/icons/hicolor/scalable/apps/teams.svg"
 APP_DIR="${HOME}/.local/share/applications"
 
 echo "Uninstalling teams-launcher ..."
@@ -20,6 +21,16 @@ if [[ -f "${DESKTOP_DEST}" ]]; then
   rm -f "${DESKTOP_DEST}"
   echo "Removed ${DESKTOP_DEST}"
   removed=1
+fi
+
+if [[ -f "${ICON_DEST}" ]]; then
+  rm -f "${ICON_DEST}"
+  echo "Removed ${ICON_DEST}"
+  removed=1
+fi
+
+if command -v gtk-update-icon-cache &>/dev/null; then
+  gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
 fi
 
 if command -v update-desktop-database &>/dev/null; then

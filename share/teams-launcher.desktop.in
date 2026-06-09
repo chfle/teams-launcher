@@ -8,3 +8,4 @@ Terminal=false
 Icon=teams
 Categories=Network;InstantMessaging;
 StartupWMClass=TeamsLauncher
+StartupNotify=true

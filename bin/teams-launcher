@@ -1,45 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---------------------------------------------------------------------------
-# teams-launcher — launch Microsoft Teams as a Chromium PWA
-# ---------------------------------------------------------------------------
+TEAMS_URL="https://teams.microsoft.com/v2/"
+PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/teams-launcher.pid"
 
+# ── Usage ────────────────────────────────────────────────────────────────────
 usage() {
   cat <<'EOF'
 Usage: teams-launcher [OPTIONS]
 
-Launch Microsoft Teams as a Chromium PWA.
+Launch Microsoft Teams as an isolated Chromium PWA.
 
 Options:
   --mode ephemeral|persistent   Profile mode (default: ephemeral)
-                                  ephemeral   - temporary profile, deleted on exit
-                                  persistent  - profile kept across launches
-  --dry-run                     Print resolved profile path and command, then exit
+                                  ephemeral  - RAM profile deleted on exit
+                                  persistent - profile kept across launches
+  --dry-run                     Print resolved profile path and command; do not launch
   --help                        Show this help text and exit
 
 Environment variables:
-  TEAMS_MODE    Equivalent to --mode (overridden by --mode flag)
-  CHROMIUM      Path to chromium binary (detected automatically if unset)
+  TEAMS_MODE       Equivalent to --mode (flag takes precedence)
+  CHROMIUM         Path to Chromium binary (auto-detected if unset)
   XDG_RUNTIME_DIR  Base dir for ephemeral profiles (default: /tmp)
   XDG_DATA_HOME    Base dir for persistent profile (default: ~/.local/share)
 
-Installation:
-  If chromium is not found, install it with:
-    sudo apt install chromium
+Install Chromium if missing:
+  sudo apt install chromium
 EOF
 }
 
-# ---------------------------------------------------------------------------
-# Find a usable chromium binary
-# ---------------------------------------------------------------------------
+# ── Chromium detection ────────────────────────────────────────────────────────
 find_chromium() {
   local candidates=()
-
-  # Prefer explicit override, then standard names
-  if [[ -n "${CHROMIUM:-}" ]]; then
-    candidates+=("${CHROMIUM}")
-  fi
+  [[ -n "${CHROMIUM:-}" ]] && candidates+=("${CHROMIUM}")
   candidates+=("chromium" "chromium-browser")
 
   local candidate
@@ -52,23 +45,67 @@ find_chromium() {
 
   printf 'Error: no Chromium binary found.\n' >&2
   printf '\nTried in order: CHROMIUM env var, chromium, chromium-browser\n' >&2
-  printf '\nInstall Chromium with:\n  sudo apt install chromium\n' >&2
-  printf '\nOr set CHROMIUM=/path/to/chromium before running.\n' >&2
+  printf '\nInstall with:\n  sudo apt install chromium\n' >&2
+  printf '\nOr: CHROMIUM=/path/to/chromium teams-launcher\n' >&2
   return 1
 }
 
-# ---------------------------------------------------------------------------
-# Cleanup handler — removes ephemeral profile
-# ---------------------------------------------------------------------------
+# ── Window raise (single-instance) ───────────────────────────────────────────
+# Try three approaches in order: xdotool (X11/XWayland), wmctrl (X11/XWayland),
+# KWin D-Bus scripting (KDE Wayland native). Silently succeeds if any works.
+raise_window() {
+  # X11 / XWayland — xdotool
+  if command -v xdotool &>/dev/null; then
+    if xdotool search --class TeamsLauncher windowactivate --sync 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  # X11 / XWayland — wmctrl
+  if command -v wmctrl &>/dev/null; then
+    if wmctrl -xa TeamsLauncher 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  # KDE Wayland — inject a one-shot KWin script via D-Bus
+  local _qdbus=""
+  if command -v qdbus6 &>/dev/null; then
+    _qdbus="qdbus6"
+  elif command -v qdbus &>/dev/null; then
+    _qdbus="qdbus"
+  fi
+  if [[ -n "${_qdbus}" ]]; then
+    local _script _sid
+    _script="$(mktemp /tmp/teams-kwin-XXXXXX.js)" || return 0
+    # KWin normalises resourceClass to lowercase; TeamsLauncher -> teamslauncher
+    printf '%s' \
+      'workspace.clientList().forEach(function(c){' \
+      'if(c.resourceClass==="teamslauncher"){' \
+      'c.minimized=false;workspace.activeClient=c;}});' \
+      > "${_script}"
+    _sid="$("${_qdbus}" org.kde.KWin /Scripting \
+             org.kde.kwin.Scripting.loadScript "${_script}" "" 2>/dev/null)" || _sid=""
+    if [[ -n "${_sid}" ]]; then
+      "${_qdbus}" org.kde.KWin "/Scripting/Script${_sid}" \
+        org.kde.kwin.Script.run 2>/dev/null || true
+      "${_qdbus}" org.kde.KWin /Scripting \
+        org.kde.kwin.Scripting.unloadScript "${_sid}" 2>/dev/null || true
+    fi
+    rm -f "${_script}"
+  fi
+  return 0
+}
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
 cleanup() {
+  rm -f "${PID_FILE}"
   if [[ "${CLEANUP_PROFILE}" == "true" && -n "${PROFILE:-}" && -d "${PROFILE}" ]]; then
     rm -rf "${PROFILE}"
   fi
 }
 
-# ---------------------------------------------------------------------------
-# Signal handler — forward SIGTERM/SIGINT to chromium then exit 143
-# ---------------------------------------------------------------------------
+# ── Signal handler ────────────────────────────────────────────────────────────
 handle_signal() {
   if [[ -n "${CHROMIUM_PID}" ]]; then
     kill "${CHROMIUM_PID}" 2>/dev/null || true
@@ -76,105 +113,80 @@ handle_signal() {
   exit 143
 }
 
-# ---------------------------------------------------------------------------
-# Parse arguments
-# ---------------------------------------------------------------------------
+# ── Argument parsing ──────────────────────────────────────────────────────────
 MODE="${TEAMS_MODE:-ephemeral}"
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --help)
-      usage
-      exit 0
-      ;;
-    --dry-run)
-      DRY_RUN=true
-      shift
-      ;;
-    --mode=*)
-      MODE="${1#--mode=}"
-      shift
-      ;;
+    --help)    usage; exit 0 ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --mode=*)  MODE="${1#--mode=}"; shift ;;
     --mode)
-      if [[ $# -lt 2 ]]; then
-        printf 'Error: --mode requires a value\n' >&2
-        exit 2
-      fi
-      MODE="$2"
-      shift 2
-      ;;
-    -*)
-      printf 'Error: unknown flag: %s\n' "$1" >&2
-      exit 2
-      ;;
-    *)
-      printf 'Error: unexpected argument: %s\n' "$1" >&2
-      exit 2
-      ;;
+      [[ $# -lt 2 ]] && { printf 'Error: --mode requires a value\n' >&2; exit 2; }
+      MODE="$2"; shift 2 ;;
+    -*) printf 'Error: unknown flag: %s\n' "$1" >&2; exit 2 ;;
+    *)  printf 'Error: unexpected argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
-# Validate mode
 if [[ "${MODE}" != "ephemeral" && "${MODE}" != "persistent" ]]; then
   printf 'Error: --mode must be "ephemeral" or "persistent", got: %s\n' "${MODE}" >&2
   exit 2
 fi
 
-# ---------------------------------------------------------------------------
-# Step 1: Resolve chromium binary (fail fast before touching disk)
-# ---------------------------------------------------------------------------
+# ── Single-instance check (skip for dry-run) ──────────────────────────────────
+if [[ "${DRY_RUN}" == "false" && -f "${PID_FILE}" ]]; then
+  _existing_pid=""
+  read -r _existing_pid < "${PID_FILE}" 2>/dev/null || true
+  if [[ -n "${_existing_pid}" ]] && kill -0 "${_existing_pid}" 2>/dev/null; then
+    raise_window
+    exit 0
+  fi
+  # Stale lockfile — clear it before launching
+  rm -f "${PID_FILE}"
+fi
+
+# ── Chromium detection (fail fast before touching disk) ───────────────────────
 CHROMIUM_BIN="$(find_chromium)"
 
-# ---------------------------------------------------------------------------
-# Step 2: Set CLEANUP_PROFILE and create PROFILE
-# ---------------------------------------------------------------------------
+# ── Profile setup ─────────────────────────────────────────────────────────────
+CLEANUP_PROFILE=false
+PROFILE=""
+CHROMIUM_PID=""
+
 if [[ "${MODE}" == "ephemeral" ]]; then
   CLEANUP_PROFILE=true
   PROFILE="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/teams-launcher-XXXXXXXXXX")"
 else
-  CLEANUP_PROFILE=false
   PROFILE="${XDG_DATA_HOME:-${HOME}/.local/share}/teams-launcher/profile"
   mkdir -p "${PROFILE}"
 fi
 
-# ---------------------------------------------------------------------------
-# Step 3: Set traps (immediately after PROFILE is created)
-# ---------------------------------------------------------------------------
-CHROMIUM_PID=""
+# ── Traps (set immediately after profile exists) ──────────────────────────────
 trap cleanup EXIT
 trap handle_signal TERM INT
 
-# ---------------------------------------------------------------------------
-# Step 5: Build command array
-# ---------------------------------------------------------------------------
-CHROMIUM_ARGS=(
-  --user-data-dir="${PROFILE}"
-  --app="https://teams.microsoft.com/v2/"
-  --class=TeamsLauncher
-  --no-first-run
-  --no-default-browser-check
-  --password-store=basic
-)
-
-# ---------------------------------------------------------------------------
-# Step 6: Dry-run check
-# ---------------------------------------------------------------------------
+# ── Dry-run ───────────────────────────────────────────────────────────────────
 if [[ "${DRY_RUN}" == "true" ]]; then
   printf 'PROFILE=%s\n' "${PROFILE}"
-  printf 'COMMAND=%s' "${CHROMIUM_BIN}"
-  local_arg=""
-  for local_arg in "${CHROMIUM_ARGS[@]}"; do
-    printf ' %s' "${local_arg}"
-  done
-  printf '\n'
+  printf 'COMMAND=%s --user-data-dir=%s --app=%s --class=TeamsLauncher --no-first-run --no-default-browser-check --password-store=basic\n' \
+    "${CHROMIUM_BIN}" "${PROFILE}" "${TEAMS_URL}"
   exit 0
 fi
 
-# ---------------------------------------------------------------------------
-# Step 7: Launch Chromium in background, then wait for it
-# ---------------------------------------------------------------------------
-"${CHROMIUM_BIN}" "${CHROMIUM_ARGS[@]}" &
+# ── Write PID file ────────────────────────────────────────────────────────────
+printf '%d\n' "$$" > "${PID_FILE}"
+
+# ── Launch ────────────────────────────────────────────────────────────────────
+"${CHROMIUM_BIN}" \
+  --user-data-dir="${PROFILE}" \
+  --app="${TEAMS_URL}" \
+  --class=TeamsLauncher \
+  --no-first-run \
+  --no-default-browser-check \
+  --password-store=basic &
+
 CHROMIUM_PID="$!"
 wait "${CHROMIUM_PID}"
 CHROMIUM_PID=""
