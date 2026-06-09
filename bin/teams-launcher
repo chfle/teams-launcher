@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# teams-launcher — launch Microsoft Teams as a Chromium PWA
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<'EOF'
+Usage: teams-launcher [OPTIONS]
+
+Launch Microsoft Teams as a Chromium PWA.
+
+Options:
+  --mode ephemeral|persistent   Profile mode (default: ephemeral)
+                                  ephemeral   - temporary profile, deleted on exit
+                                  persistent  - profile kept across launches
+  --dry-run                     Print resolved profile path and command, then exit
+  --help                        Show this help text and exit
+
+Environment variables:
+  TEAMS_MODE    Equivalent to --mode (overridden by --mode flag)
+  CHROMIUM      Path to chromium binary (detected automatically if unset)
+  XDG_RUNTIME_DIR  Base dir for ephemeral profiles (default: /tmp)
+  XDG_DATA_HOME    Base dir for persistent profile (default: ~/.local/share)
+
+Installation:
+  If chromium is not found, install it with:
+    sudo apt install chromium
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Find a usable chromium binary
+# ---------------------------------------------------------------------------
+find_chromium() {
+  local candidates=()
+
+  # Prefer explicit override, then standard names
+  if [[ -n "${CHROMIUM:-}" ]]; then
+    candidates+=("${CHROMIUM}")
+  fi
+  candidates+=("chromium" "chromium-browser")
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if command -v "${candidate}" &>/dev/null; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+
+  cat >&2 <<'EOF'
+Error: no Chromium binary found.
+
+Tried (in order):
+  $CHROMIUM env var, chromium, chromium-browser
+
+Install Chromium with:
+  sudo apt install chromium
+
+Or point to an existing binary:
+  CHROMIUM=/path/to/chromium teams-launcher
+EOF
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Cleanup handler — removes ephemeral profile
+# ---------------------------------------------------------------------------
+cleanup() {
+  if [[ "${CLEANUP_PROFILE}" == "true" && -n "${PROFILE:-}" && -d "${PROFILE}" ]]; then
+    rm -rf "${PROFILE}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Signal handler — forward SIGTERM/SIGINT to chromium then exit 143
+# ---------------------------------------------------------------------------
+handle_signal() {
+  if [[ -n "${CHROMIUM_PID}" ]]; then
+    kill "${CHROMIUM_PID}" 2>/dev/null || true
+  fi
+  exit 143
+}
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+MODE="${TEAMS_MODE:-ephemeral}"
+DRY_RUN=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help)
+      usage
+      exit 0
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --mode=*)
+      MODE="${1#--mode=}"
+      shift
+      ;;
+    --mode)
+      if [[ $# -lt 2 ]]; then
+        printf 'Error: --mode requires a value\n' >&2
+        exit 2
+      fi
+      MODE="$2"
+      shift 2
+      ;;
+    -*)
+      printf 'Error: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      printf 'Error: unexpected argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Validate mode
+if [[ "${MODE}" != "ephemeral" && "${MODE}" != "persistent" ]]; then
+  printf 'Error: --mode must be "ephemeral" or "persistent", got: %s\n' "${MODE}" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1: Set CLEANUP_PROFILE
+# ---------------------------------------------------------------------------
+if [[ "${MODE}" == "ephemeral" ]]; then
+  CLEANUP_PROFILE=true
+else
+  CLEANUP_PROFILE=false
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2: Create PROFILE
+# ---------------------------------------------------------------------------
+if [[ "${MODE}" == "ephemeral" ]]; then
+  PROFILE="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/teams-launcher-XXXXXXXXXX")"
+else
+  PROFILE="${XDG_DATA_HOME:-${HOME}/.local/share}/teams-launcher/profile"
+  mkdir -p "${PROFILE}"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3: Set traps (after PROFILE exists, before anything else)
+# ---------------------------------------------------------------------------
+CHROMIUM_PID=""
+trap cleanup EXIT
+trap handle_signal TERM INT
+
+# ---------------------------------------------------------------------------
+# Step 4: Resolve chromium binary
+# ---------------------------------------------------------------------------
+CHROMIUM_BIN="$(find_chromium)"
+
+# ---------------------------------------------------------------------------
+# Step 5: Build command array
+# ---------------------------------------------------------------------------
+CHROMIUM_ARGS=(
+  --user-data-dir="${PROFILE}"
+  --app="https://teams.microsoft.com/v2/"
+  --class=TeamsLauncher
+  --no-first-run
+  --no-default-browser-check
+  --password-store=basic
+)
+
+# ---------------------------------------------------------------------------
+# Step 6: Dry-run check
+# ---------------------------------------------------------------------------
+if [[ "${DRY_RUN}" == "true" ]]; then
+  printf 'PROFILE=%s\n' "${PROFILE}"
+  printf 'COMMAND=%s' "${CHROMIUM_BIN}"
+  local_arg=""
+  for local_arg in "${CHROMIUM_ARGS[@]}"; do
+    printf ' %s' "${local_arg}"
+  done
+  printf '\n'
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Launch Chromium in background, then wait for it
+# ---------------------------------------------------------------------------
+"${CHROMIUM_BIN}" "${CHROMIUM_ARGS[@]}" &
+CHROMIUM_PID="$!"
+wait "${CHROMIUM_PID}"
+CHROMIUM_PID=""
