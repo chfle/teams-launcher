@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Teams (Launcher)
+Comment=Microsoft Teams web app in an isolated Chromium profile
+Exec=@BINPATH@
+Terminal=false
+Icon=teams
+Categories=Network;InstantMessaging;
+StartupWMClass=TeamsLauncher
